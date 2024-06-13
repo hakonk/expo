@@ -7,11 +7,6 @@ import React
 
 var isHookInstalled = false
 
-extension RCTHTTPRequestHandler {
-  static let didSendBodyDataSelector = Selector("urlSession(_:task:didSendBodyData:totalBytesSent:totalBytesExpectedToSend:)")
-  static let didReceiveSelector = Selector("URLSession:dataTask:didReceiveResponse:completionHandler:")
-}
-
 @objc(EXDevLauncherNetworkInterceptor)
 public final class DevLauncherNetworkInterceptor: NSObject, ExpoRequestCdpInterceptorDelegate {
   fileprivate static var inspectorPackagerConn: RCTInspectorPackagerConnection?
@@ -21,28 +16,16 @@ public final class DevLauncherNetworkInterceptor: NSObject, ExpoRequestCdpInterc
     assert(Thread.isMainThread)
 
     if !isHookInstalled {
-      RCTHTTPRequestHandler.interceptDidReceiveData { task, data in
-        
-      }
-      RCTHTTPRequestHandler.interceptDidCompleteWithError { task, error in
-
-      }
-      RCTHTTPRequestHandler.interceptDidReceiveResponse { task, response in
-
-      }
-      RCTHTTPRequestHandler.interceptWillPerformHTTPRedirection { task, response, request in
-        
-      }
       EXDevLauncherUtils.swizzleClassMethod(
         selector: #selector(RCTInspectorDevServerHelper.connect(withBundleURL:)),
         withSelector: #selector(RCTInspectorDevServerHelper.EXDevLauncher_connect(withBundleURL:)),
         forClass: RCTInspectorDevServerHelper.self
       )
-      EXDevLauncherUtils.swizzleClassMethod(
-        selector: #selector(getter: URLSessionConfiguration.default),
-        withSelector: #selector(URLSessionConfiguration.EXDevLauncher_urlSessionConfiguration),
-        forClass: URLSessionConfiguration.self
-      )
+//      EXDevLauncherUtils.swizzleClassMethod(
+//        selector: #selector(getter: URLSessionConfiguration.default),
+//        withSelector: #selector(URLSessionConfiguration.EXDevLauncher_urlSessionConfiguration),
+//        forClass: URLSessionConfiguration.self
+//      )
       isHookInstalled = true
     }
 
@@ -133,11 +116,11 @@ extension URLSessionConfiguration {
     ) as? URLSessionConfiguration else {
       fatalError("Unable to get original URLSessionConfiguration.default")
     }
-    var protocolClasses: [AnyClass] = config.protocolClasses ?? []
-    if !protocolClasses.contains(where: { $0 == ExpoRequestInterceptorProtocol.self }) {
-      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
-    }
-    config.protocolClasses = protocolClasses
+//    var protocolClasses: [AnyClass] = config.protocolClasses ?? []
+//    if !protocolClasses.contains(where: { $0 == ExpoRequestInterceptorProtocol.self }) {
+//      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
+//    }
+//    config.protocolClasses = protocolClasses
     return config
   }
 }

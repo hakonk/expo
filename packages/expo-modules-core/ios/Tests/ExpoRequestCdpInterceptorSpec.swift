@@ -18,13 +18,14 @@ final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
   private static let mockDelegate = MockCdpInterceptorDelegate()
   private static var session: URLSession = {
     let configuration = URLSessionConfiguration.default
-    let protocolClasses = configuration.protocolClasses
-    if var protocolClasses = protocolClasses {
-      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
-      configuration.protocolClasses = protocolClasses
-    } else {
-      configuration.protocolClasses = [ExpoRequestInterceptorProtocol.self]
-    }
+//    let protocolClasses = configuration.protocolClasses
+//    if var protocolClasses = protocolClasses {
+//      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
+//      configuration.protocolClasses = protocolClasses
+//    } else {
+//      configuration.protocolClasses = [ExpoRequestInterceptorProtocol.self]
+//    }
+    // TODO: Intercept delegate here
     return URLSession(configuration: configuration)
   }()
 

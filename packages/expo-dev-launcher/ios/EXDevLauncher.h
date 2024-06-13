@@ -1,7 +1,6 @@
 // Copyright 2015-present 650 Industries. All rights reserved.
 
 #import <React/RCTBridgeModule.h>
-#import "RCTHTTPRequestHandler+Intercept.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

@@ -6,6 +6,7 @@
 #import <ExpoModulesCore/EXJavaScriptObject.h>
 #import <ExpoModulesCore/EXJavaScriptRuntime.h>
 #import <ExpoModulesCore/RCTComponentData+Privates.h>
+#import <ExpoModulesCore/RCTHTTPRequestHandler+Intercept.h>
 
 // When `use_frameworks!` is used, the generated Swift header is inside ExpoModulesCore module.
 // Otherwise, it's available only locally with double-quoted imports.

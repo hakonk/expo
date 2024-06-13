@@ -6,7 +6,7 @@ import Foundation
  `URLRequest.httpBodyData()` extension to read the underlying `httpBodyStream` as Data.
  */
 extension URLRequest {
-  func httpBodyData(limit: Int = ExpoRequestInterceptorProtocol.MAX_BODY_SIZE) -> Data? {
+  func httpBodyData(limit: Int = 1_048_576) -> Data? {
     if let httpBody = self.httpBody {
       return httpBody
     }

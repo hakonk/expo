@@ -6,17 +6,57 @@ import Foundation
  The `ExpoRequestInterceptorProtocolDelegate` implementation to
  dispatch CDP (Chrome DevTools Protocol: https://chromedevtools.github.io/devtools-protocol/) events.
  */
-@objc(EXRequestCdpInterceptor)
-public final class ExpoRequestCdpInterceptor: NSObject, ExpoRequestInterceptorProtocolDelegate {
+public final class ExpoRequestCdpInterceptor {
   private var delegate: ExpoRequestCdpInterceptorDelegate?
-  internal var dispatchQueue = DispatchQueue(label: "expo.requestCdpInterceptor")
+  internal var dispatchQueue = DispatchQueue(label: "expo.requestCdpInterceptor", qos: .utility)
 
-  override private init() {}
+  private init() {
+    interceptRCTHTTPRequestHandler()
+  }
 
-  @objc
   public static let shared = ExpoRequestCdpInterceptor()
 
-  @objc
+  public func interceptRCTHTTPRequestHandler() {
+    RCTHTTPRequestHandler.interceptCreateTask { task in
+      self.dispatchQueue.async {
+        if let request = task.currentRequest {
+          self.willSendRequest(requestId: "\(request.hashValue)", task: task, request: request, redirectResponse: nil)
+        }
+      }
+    }
+    RCTHTTPRequestHandler.interceptDidReceiveData { task, data in
+      if let request = task.currentRequest {
+        // TODO: figure out isText and limit
+        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: data, isText: false, responseBodyExceedsLimit: false)
+      }
+    }
+    RCTHTTPRequestHandler.interceptSendRequest { request in
+      self.dispatchQueue.async {
+
+      }
+    }
+    RCTHTTPRequestHandler.interceptDidCompleteWithError { task, error in
+      guard error == nil else { return }
+      if let request = task.currentRequest {
+        // TODO: Fix hard coded params below
+        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: Data(), isText: false, responseBodyExceedsLimit: false)
+      }
+
+    }
+    RCTHTTPRequestHandler.interceptWillPerformHTTPRedirection { task, response, request in
+      self.willSendRequest(requestId: "\(request.hashValue)", task: task, request: request, redirectResponse: response)
+    }
+    RCTHTTPRequestHandler.interceptDidReceiveResponse { task, response in
+      if let request = task.currentRequest {
+        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: Data(), isText: false, responseBodyExceedsLimit: false)
+      }
+    }
+  }
+
+  public func removeInterceptFromRCTHTTPRequestHandler() {
+    RCTHTTPRequestHandler.removeAllInterceptedMethods()
+  }
+
   public func setDelegate(_ newValue: ExpoRequestCdpInterceptorDelegate?) {
     dispatchQueue.async {
       self.delegate = newValue
@@ -34,7 +74,7 @@ public final class ExpoRequestCdpInterceptor: NSObject, ExpoRequestInterceptorPr
 
   // MARK: ExpoRequestInterceptorProtocolDelegate implementations
 
-  func willSendRequest(requestId: String, task: URLSessionTask, request: URLRequest, redirectResponse: HTTPURLResponse?) {
+  private func willSendRequest(requestId: String, task: URLSessionTask, request: URLRequest, redirectResponse: HTTPURLResponse?) {
     let now = Date().timeIntervalSince1970
 
     let params = CdpNetwork.RequestWillBeSentParams(
@@ -49,7 +89,7 @@ public final class ExpoRequestCdpInterceptor: NSObject, ExpoRequestInterceptorPr
     dispatchEvent(CdpNetwork.Event(method: "Network.requestWillBeSentExtraInfo", params: params2))
   }
 
-  func didReceiveResponse(requestId: String, task: URLSessionTask, responseBody: Data, isText: Bool, responseBodyExceedsLimit: Bool) {
+  private func didReceiveResponse(requestId: String, task: URLSessionTask, responseBody: Data, isText: Bool, responseBodyExceedsLimit: Bool) {
     guard let request = task.currentRequest, let response = task.response as? HTTPURLResponse else {
       return
     }
