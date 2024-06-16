@@ -15,7 +15,7 @@ public final class ExpoRequestCdpInterceptor {
     defer { requestCounter += 1 }
     return requestCounter
   }
-  private var tasks: [Int: TaskWrapper] = [:]
+  private var tasks: [Int: CdpTaskWrapper] = [:]
 
   private init() {
     interceptRCTHTTPRequestHandler()
@@ -26,7 +26,7 @@ public final class ExpoRequestCdpInterceptor {
   public func interceptRCTHTTPRequestHandler() {
     RCTHTTPRequestHandler.interceptCreateTask { task in
       self.dispatchQueue.async {
-        let wrapper = TaskWrapper(task, queue: self.dispatchQueue, createId: self.getRequestId)
+        let wrapper = CdpTaskWrapper(task, queue: self.dispatchQueue, createId: self.getRequestId)
         self.tasks[task.taskIdentifier] = wrapper
         if let request = task.currentRequest {
           let id = wrapper.requestId(for: request.hashValue)
@@ -35,22 +35,25 @@ public final class ExpoRequestCdpInterceptor {
       }
     }
     RCTHTTPRequestHandler.interceptDidReceiveData { task, data in
-      if let request = task.currentRequest {
-        // TODO: figure out limit
-        let isText = (task.response as? HTTPURLResponse)?.responseIsText ?? false
-        let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
-        self.didReceiveResponse(
-          requestId: "\(id)",
-          task: task,
-          responseBody: data,
-          isText: isText,
-          responseBodyExceedsLimit: false
-        )
+      self.dispatchQueue.async {
+        if let request = task.currentRequest {
+          // TODO: figure out limit
+          let isText = (task.response as? HTTPURLResponse)?.responseIsText ?? false
+          let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
+          self.didReceiveResponse(
+            requestId: "\(id)",
+            task: task,
+            responseBody: data,
+            isText: isText,
+            responseBodyExceedsLimit: false
+          )
+        }
       }
     }
     RCTHTTPRequestHandler.interceptDidCompleteWithError { task, error in
       self.dispatchQueue.async {
         defer {
+          self.tasks[task.taskIdentifier]?.invalidateObserveration()
           self.tasks.removeValue(forKey: task.taskIdentifier)
         }
         guard error == nil else { return }
@@ -85,17 +88,17 @@ public final class ExpoRequestCdpInterceptor {
   }
 
   private func dispatchEvent<T: CdpNetwork.EventParms>(_ event: CdpNetwork.Event<T>) {
-    dispatchQueue.async {
-      let encoder = JSONEncoder()
-      if let jsonData = try? encoder.encode(event), let payload = String(data: jsonData, encoding: .utf8) {
-        self.delegate?.dispatch(payload)
-      }
+    dispatchPrecondition(condition: .onQueue(dispatchQueue))
+    let encoder = JSONEncoder()
+    if let jsonData = try? encoder.encode(event), let payload = String(data: jsonData, encoding: .utf8) {
+      self.delegate?.dispatch(payload)
     }
   }
 
   // MARK: ExpoRequestInterceptorProtocolDelegate implementations
 
   private func willSendRequest(requestId: String, task: URLSessionTask, request: URLRequest, redirectResponse: HTTPURLResponse?) {
+    dispatchPrecondition(condition: .onQueue(dispatchQueue))
     let now = Date().timeIntervalSince1970
 
     let params = CdpNetwork.RequestWillBeSentParams(
@@ -111,6 +114,7 @@ public final class ExpoRequestCdpInterceptor {
   }
 
   private func didReceiveResponse(requestId: String, task: URLSessionTask, responseBody: Data, isText: Bool, responseBodyExceedsLimit: Bool) {
+    dispatchPrecondition(condition: .onQueue(dispatchQueue))
     guard let request = task.currentRequest, let response = task.response as? HTTPURLResponse else {
       return
     }
@@ -143,10 +147,10 @@ public protocol ExpoRequestCdpInterceptorDelegate {
   func dispatch(_ event: String)
 }
 
-final class TaskWrapper {
+final class CdpTaskWrapper {
   typealias RequestId = Int
   private var requestIds: [Int: RequestId] = [:]
-  var observation: NSKeyValueObservation?
+  private var observation: NSKeyValueObservation?
   private let task: URLSessionTask
 
   init(_ task: URLSessionTask, queue: DispatchQueue, createId: @escaping () -> Int) {
@@ -161,6 +165,10 @@ final class TaskWrapper {
     }
   }
 
+  func allRequestIds() -> [RequestId] {
+    requestIds.values.map { RequestId($0) } 
+  }
+
   func currentRequestId() -> Int? {
     task.currentRequest.flatMap {
       requestIds[$0.hashValue]
@@ -171,8 +179,13 @@ final class TaskWrapper {
     requestIds[requestDigest]
   }
 
-  deinit {
+  func invalidateObserveration() {
     observation?.invalidate()
+    observation = nil
+  }
+
+  deinit {
+    invalidateObserveration()
   }
 }
 
