@@ -7,8 +7,15 @@ import Foundation
  dispatch CDP (Chrome DevTools Protocol: https://chromedevtools.github.io/devtools-protocol/) events.
  */
 public final class ExpoRequestCdpInterceptor {
+  static let MAX_BODY_SIZE = 1_048_576
   private var delegate: ExpoRequestCdpInterceptorDelegate?
   internal var dispatchQueue = DispatchQueue(label: "expo.requestCdpInterceptor", qos: .utility)
+  private var requestCounter = 0
+  private func getRequestId() -> Int {
+    defer { requestCounter += 1 }
+    return requestCounter
+  }
+  private var tasks: [Int: TaskWrapper] = [:]
 
   private init() {
     interceptRCTHTTPRequestHandler()
@@ -19,36 +26,49 @@ public final class ExpoRequestCdpInterceptor {
   public func interceptRCTHTTPRequestHandler() {
     RCTHTTPRequestHandler.interceptCreateTask { task in
       self.dispatchQueue.async {
+        let wrapper = TaskWrapper(task, queue: self.dispatchQueue, createId: self.getRequestId)
+        self.tasks[task.taskIdentifier] = wrapper
         if let request = task.currentRequest {
-          self.willSendRequest(requestId: "\(request.hashValue)", task: task, request: request, redirectResponse: nil)
+          let id = wrapper.requestId(for: request.hashValue)
+          self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: nil)
         }
       }
     }
     RCTHTTPRequestHandler.interceptDidReceiveData { task, data in
       if let request = task.currentRequest {
-        // TODO: figure out isText and limit
-        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: data, isText: false, responseBodyExceedsLimit: false)
-      }
-    }
-    RCTHTTPRequestHandler.interceptSendRequest { request in
-      self.dispatchQueue.async {
-
+        // TODO: figure out limit
+        let isText = (task.response as? HTTPURLResponse)?.responseIsText ?? false
+        let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
+        self.didReceiveResponse(
+          requestId: "\(id)",
+          task: task,
+          responseBody: data,
+          isText: isText,
+          responseBodyExceedsLimit: false
+        )
       }
     }
     RCTHTTPRequestHandler.interceptDidCompleteWithError { task, error in
-      guard error == nil else { return }
-      if let request = task.currentRequest {
-        // TODO: Fix hard coded params below
-        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: Data(), isText: false, responseBodyExceedsLimit: false)
+      self.dispatchQueue.async {
+        defer {
+          self.tasks.removeValue(forKey: task.taskIdentifier)
+        }
+        guard error == nil else { return }
+        if let request = task.currentRequest {
+          // TODO: Fix hard coded params below
+          let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
+          self.didReceiveResponse(requestId: "\(id)",
+                                  task: task,
+                                  responseBody: Data(),
+                                  isText: (task.response as? HTTPURLResponse)?.responseIsText ?? false,
+                                  responseBodyExceedsLimit: false)
+        }
       }
-
     }
     RCTHTTPRequestHandler.interceptWillPerformHTTPRedirection { task, response, request in
-      self.willSendRequest(requestId: "\(request.hashValue)", task: task, request: request, redirectResponse: response)
-    }
-    RCTHTTPRequestHandler.interceptDidReceiveResponse { task, response in
-      if let request = task.currentRequest {
-        self.didReceiveResponse(requestId: "\(request.hashValue)", task: task, responseBody: Data(), isText: false, responseBodyExceedsLimit: false)
+      self.dispatchQueue.async {
+        let id = self.tasks[task.taskIdentifier]?.requestId(for: request.hashValue) ?? -1
+        self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: response)
       }
     }
   }
@@ -58,7 +78,8 @@ public final class ExpoRequestCdpInterceptor {
   }
 
   public func setDelegate(_ newValue: ExpoRequestCdpInterceptorDelegate?) {
-    dispatchQueue.async {
+    dispatchPrecondition(condition: .notOnQueue(dispatchQueue))
+    dispatchQueue.sync {
       self.delegate = newValue
     }
   }
@@ -120,4 +141,46 @@ public final class ExpoRequestCdpInterceptor {
 public protocol ExpoRequestCdpInterceptorDelegate {
   @objc
   func dispatch(_ event: String)
+}
+
+final class TaskWrapper {
+  typealias RequestId = Int
+  private var requestIds: [Int: RequestId] = [:]
+  var observation: NSKeyValueObservation?
+  private let task: URLSessionTask
+
+  init(_ task: URLSessionTask, queue: DispatchQueue, createId: @escaping () -> Int) {
+    self.task = task
+    observation = task.observe(\.currentRequest, options: [.initial, .new, .old, .prior]) { [weak self] task, request in
+      queue.async {
+        guard let currentRequest = task.currentRequest else { return }
+        if self?.requestIds[currentRequest.hashValue] == nil {
+          self?.requestIds[currentRequest.hashValue] = createId()
+        }
+      }
+    }
+  }
+
+  func currentRequestId() -> Int? {
+    task.currentRequest.flatMap {
+      requestIds[$0.hashValue]
+    }
+  }
+
+  func requestId(for requestDigest: Int) -> Int? {
+    requestIds[requestDigest]
+  }
+
+  deinit {
+    observation?.invalidate()
+  }
+}
+
+private extension HTTPURLResponse {
+  var responseIsText: Bool {
+    guard let contentType = value(forHTTPHeaderField: "Content-Type") else {
+      return false
+    }
+    return contentType.starts(with: "text/") || contentType == "application/json"
+  }
 }

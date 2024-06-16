@@ -13,11 +13,8 @@
 
 +(Method)getMethodForSelector:(SEL)selector {
   Method originalMethod = class_getInstanceMethod([RCTHTTPRequestHandler class], selector);
-  if ([RCTHTTPRequestHandler conformsToProtocol:@protocol(NSURLSessionDelegate)]) {
-//    [NSException raise:@"Target class RCTHTTPRequestHandler does not conform to NSURLSessionDelegate" format:@""];
-  }
   if (!originalMethod) {
-    [NSException raise:@"Target class RCTHTTPRequestHandler does not conform to NSURLSessionDelegate" format:@"%@", NSStringFromSelector(selector)];
+    [NSException raise:@"Missing original method" format:@"Selector: %@, not found", NSStringFromSelector(selector)];
   }
   return originalMethod;
 }

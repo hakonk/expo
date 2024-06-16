@@ -21,11 +21,6 @@ public final class DevLauncherNetworkInterceptor: NSObject, ExpoRequestCdpInterc
         withSelector: #selector(RCTInspectorDevServerHelper.EXDevLauncher_connect(withBundleURL:)),
         forClass: RCTInspectorDevServerHelper.self
       )
-//      EXDevLauncherUtils.swizzleClassMethod(
-//        selector: #selector(getter: URLSessionConfiguration.default),
-//        withSelector: #selector(URLSessionConfiguration.EXDevLauncher_urlSessionConfiguration),
-//        forClass: URLSessionConfiguration.self
-//      )
       isHookInstalled = true
     }
 
@@ -108,21 +103,21 @@ extension URLSessionConfiguration {
   /**
    Swizzled `URLSessionConfiguration.default` for us to add the `EXDevLauncherRequestLoggerProtocol` interceptor
    */
-  @objc
-  static func EXDevLauncher_urlSessionConfiguration() -> URLSessionConfiguration {
-    guard let config = try? EXDevLauncherUtils.invokeOriginalClassMethod(
-      selector: #selector(getter: URLSessionConfiguration.default),
-      forClass: URLSessionConfiguration.self
-    ) as? URLSessionConfiguration else {
-      fatalError("Unable to get original URLSessionConfiguration.default")
-    }
-//    var protocolClasses: [AnyClass] = config.protocolClasses ?? []
-//    if !protocolClasses.contains(where: { $0 == ExpoRequestInterceptorProtocol.self }) {
-//      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
+//  @objc
+//  static func EXDevLauncher_urlSessionConfiguration() -> URLSessionConfiguration {
+//    guard let config = try? EXDevLauncherUtils.invokeOriginalClassMethod(
+//      selector: #selector(getter: URLSessionConfiguration.default),
+//      forClass: URLSessionConfiguration.self
+//    ) as? URLSessionConfiguration else {
+//      fatalError("Unable to get original URLSessionConfiguration.default")
 //    }
-//    config.protocolClasses = protocolClasses
-    return config
-  }
+////    var protocolClasses: [AnyClass] = config.protocolClasses ?? []
+////    if !protocolClasses.contains(where: { $0 == ExpoRequestInterceptorProtocol.self }) {
+////      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
+////    }
+////    config.protocolClasses = protocolClasses
+//    return config
+//  }
 }
 
 #else
