@@ -9,7 +9,7 @@ import Foundation
 public final class ExpoRequestCdpInterceptor {
   static let MAX_BODY_SIZE = 1_048_576
   private var delegate: ExpoRequestCdpInterceptorDelegate?
-  internal var dispatchQueue = DispatchQueue(label: "expo.requestCdpInterceptor", qos: .utility)
+  let dispatchQueue = DispatchQueue(label: "expo.requestCdpInterceptor", qos: .utility)
   private var requestCounter = 0
   private func getRequestId() -> Int {
     defer { requestCounter += 1 }
@@ -17,62 +17,97 @@ public final class ExpoRequestCdpInterceptor {
   }
   private var tasks: [Int: CdpTaskWrapper] = [:]
 
-  private init() {
+  // Should only be initialized for testing
+  init() {
     interceptRCTHTTPRequestHandler()
   }
 
   public static let shared = ExpoRequestCdpInterceptor()
 
-  public func interceptRCTHTTPRequestHandler() {
-    RCTHTTPRequestHandler.interceptCreateTask { task in
-      self.dispatchQueue.async {
-        let wrapper = CdpTaskWrapper(task, queue: self.dispatchQueue, createId: self.getRequestId)
-        self.tasks[task.taskIdentifier] = wrapper
-        if let request = task.currentRequest {
-          let id = wrapper.requestId(for: request.hashValue)
-          self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: nil)
-        }
+  public func createUrlSessionDelegate() -> any URLSessionDelegate {
+    URLSessionDelegateAdapter(interceptor: self)
+  }
+
+  fileprivate func handleCreateTask(_ task: URLSessionTask) {
+    self.dispatchQueue.async {
+      let wrapper = self.getOrCreate(task)
+      if let request = task.currentRequest {
+        let id = wrapper.requestId(for: request.hashValue)
+        self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: nil)
       }
+    }
+  }
+
+  @discardableResult
+  private func getOrCreate(_ task: URLSessionTask) -> CdpTaskWrapper {
+    if let wrapper = tasks[task.taskIdentifier] {
+      return wrapper
+    }
+    let wrapper = CdpTaskWrapper(task, queue: dispatchQueue, createId: getRequestId)
+    tasks[task.taskIdentifier] = wrapper
+    return wrapper
+  }
+
+  fileprivate func handleDidReceiveData(_ task: URLSessionTask, data: Data) {
+    self.dispatchQueue.async {
+      if let request = task.currentRequest {
+        // TODO: figure out limit
+        let isText = (task.response as? HTTPURLResponse)?.responseIsText ?? false
+        let id = self.getOrCreate(task).currentRequestId() ?? -1
+        assert(id != -1, "No task has been registered")
+        self.didReceiveResponse(
+          requestId: "\(id)",
+          task: task,
+          responseBody: data,
+          isText: isText,
+          responseBodyExceedsLimit: false
+        )
+      }
+    }
+  }
+
+  fileprivate func handleDidCompleteWithError(_ task: URLSessionTask, error: Error?) {
+    self.dispatchQueue.async {
+      defer {
+        self.tasks[task.taskIdentifier]?.invalidateObserveration()
+        self.tasks.removeValue(forKey: task.taskIdentifier)
+      }
+      guard error == nil else { return }
+      if let request = task.currentRequest {
+        // TODO: Fix hard coded params below
+        let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
+        assert(id != -1, "No task has been registered")
+        self.didReceiveResponse(requestId: "\(id)",
+                                task: task,
+                                responseBody: Data(),
+                                isText: (task.response as? HTTPURLResponse)?.responseIsText ?? false,
+                                responseBodyExceedsLimit: false)
+      }
+    }
+  }
+
+  fileprivate func handleRedirect(_ task: URLSessionTask, response: HTTPURLResponse, request: URLRequest) {
+    self.dispatchQueue.async {
+      let wrapper = self.getOrCreate(task)
+      wrapper.registerRequest(request)
+      let id = wrapper.requestId(for: request.hashValue) ?? -1
+      assert(id != -1, "No task has been registered")
+      self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: response)
+    }
+  }
+
+  private func interceptRCTHTTPRequestHandler() {
+    RCTHTTPRequestHandler.interceptCreateTask { task in
+      self.handleCreateTask(task)
     }
     RCTHTTPRequestHandler.interceptDidReceiveData { task, data in
-      self.dispatchQueue.async {
-        if let request = task.currentRequest {
-          // TODO: figure out limit
-          let isText = (task.response as? HTTPURLResponse)?.responseIsText ?? false
-          let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
-          self.didReceiveResponse(
-            requestId: "\(id)",
-            task: task,
-            responseBody: data,
-            isText: isText,
-            responseBodyExceedsLimit: false
-          )
-        }
-      }
+      self.handleDidReceiveData(task, data: data)
     }
     RCTHTTPRequestHandler.interceptDidCompleteWithError { task, error in
-      self.dispatchQueue.async {
-        defer {
-          self.tasks[task.taskIdentifier]?.invalidateObserveration()
-          self.tasks.removeValue(forKey: task.taskIdentifier)
-        }
-        guard error == nil else { return }
-        if let request = task.currentRequest {
-          // TODO: Fix hard coded params below
-          let id = self.tasks[task.taskIdentifier]?.currentRequestId() ?? -1
-          self.didReceiveResponse(requestId: "\(id)",
-                                  task: task,
-                                  responseBody: Data(),
-                                  isText: (task.response as? HTTPURLResponse)?.responseIsText ?? false,
-                                  responseBodyExceedsLimit: false)
-        }
-      }
+      self.handleDidCompleteWithError(task, error: error)
     }
     RCTHTTPRequestHandler.interceptWillPerformHTTPRedirection { task, response, request in
-      self.dispatchQueue.async {
-        let id = self.tasks[task.taskIdentifier]?.requestId(for: request.hashValue) ?? -1
-        self.willSendRequest(requestId: "\(id)", task: task, request: request, redirectResponse: response)
-      }
+      self.handleRedirect(task, response: response, request: request)
     }
   }
 
@@ -152,31 +187,45 @@ final class CdpTaskWrapper {
   private var requestIds: [Int: RequestId] = [:]
   private var observation: NSKeyValueObservation?
   private let task: URLSessionTask
+  private let createId: () -> Int
+  private let queue: DispatchQueue
 
   init(_ task: URLSessionTask, queue: DispatchQueue, createId: @escaping () -> Int) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    self.queue = queue
     self.task = task
+    self.createId = createId
     observation = task.observe(\.currentRequest, options: [.initial, .new, .old, .prior]) { [weak self] task, request in
       queue.async {
         guard let currentRequest = task.currentRequest else { return }
-        if self?.requestIds[currentRequest.hashValue] == nil {
-          self?.requestIds[currentRequest.hashValue] = createId()
-        }
+        self?.registerRequest(currentRequest)
       }
     }
   }
 
-  func allRequestIds() -> [RequestId] {
-    requestIds.values.map { RequestId($0) } 
-  }
-
-  func currentRequestId() -> Int? {
-    task.currentRequest.flatMap {
-      requestIds[$0.hashValue]
+  func registerRequest(_ urlRequest: URLRequest) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    if requestIds[urlRequest.hashValue] == nil {
+      requestIds[urlRequest.hashValue] = createId()
     }
   }
 
+  func allRequestIds() -> [RequestId] {
+    dispatchPrecondition(condition: .onQueue(queue))
+    return requestIds.values.map { RequestId($0) }
+  }
+
+  func currentRequestId() -> Int? {
+    dispatchPrecondition(condition: .onQueue(queue))
+    let id = task.currentRequest.flatMap {
+      requestIds[$0.hashValue]
+    }
+    return id
+  }
+
   func requestId(for requestDigest: Int) -> Int? {
-    requestIds[requestDigest]
+    dispatchPrecondition(condition: .onQueue(queue))
+    return requestIds[requestDigest]
   }
 
   func invalidateObserveration() {
@@ -196,4 +245,31 @@ private extension HTTPURLResponse {
     }
     return contentType.starts(with: "text/") || contentType == "application/json"
   }
+}
+
+private final class URLSessionDelegateAdapter: NSObject, URLSessionDataDelegate {
+  private let interceptor: ExpoRequestCdpInterceptor
+
+  init(interceptor: ExpoRequestCdpInterceptor) {
+    self.interceptor = interceptor
+  }
+
+  func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+    interceptor.handleCreateTask(task)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    interceptor.handleDidReceiveData(dataTask, data: data)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+    interceptor.handleDidCompleteWithError(task, error: error)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest) async -> URLRequest? {
+    interceptor.handleRedirect(task, response: response, request: request)
+    // TOOD: assess whether this can simply be returned for all cases
+    return request
+  }
+
 }

@@ -15,18 +15,14 @@ final class MockCdpInterceptorDelegate: ExpoRequestCdpInterceptorDelegate {
 }
 
 final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
-  private static let mockDelegate = MockCdpInterceptorDelegate()
-  private static var session: URLSession = {
+  private static var mockDelegate: MockCdpInterceptorDelegate! = MockCdpInterceptorDelegate()
+  private static var interceptor: ExpoRequestCdpInterceptor! = ExpoRequestCdpInterceptor()
+  private static var urlSessionDelegate: URLSessionDelegate? = interceptor.createUrlSessionDelegate()
+  private static var session: URLSession! = {
     let configuration = URLSessionConfiguration.default
-//    let protocolClasses = configuration.protocolClasses
-//    if var protocolClasses = protocolClasses {
-//      protocolClasses.insert(ExpoRequestInterceptorProtocol.self, at: 0)
-//      configuration.protocolClasses = protocolClasses
-//    } else {
-//      configuration.protocolClasses = [ExpoRequestInterceptorProtocol.self]
-//    }
-    // TODO: Intercept delegate here
-    return URLSession(configuration: configuration)
+    return URLSession(configuration: configuration,
+                      delegate: ExpoRequestCdpInterceptorSpec.urlSessionDelegate,
+                      delegateQueue: nil)
   }()
 
   private static func parseJSON(data: String) -> [String: Any] {
@@ -39,18 +35,25 @@ final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
 
   override class func spec() {
     beforeSuite {
-      ExpoRequestCdpInterceptor.shared.dispatchQueue = DispatchQueue.main
-      ExpoRequestCdpInterceptor.shared.setDelegate(self.mockDelegate)
+      interceptor.setDelegate(mockDelegate)
+    }
+
+    afterSuite {
+      session.invalidateAndCancel()
+      session = nil
+      urlSessionDelegate = nil
+      interceptor = nil
+      mockDelegate = nil
     }
 
     beforeEach {
-      self.mockDelegate.events.removeAll()
+      mockDelegate.events.removeAll()
     }
 
     it("simple json data") {
       waitUntil(timeout: .seconds(2)) { done in
         self.session.dataTask(with: URL(string: "https://raw.githubusercontent.com/expo/expo/main/package.json")!) { (data, response, error) in
-          DispatchQueue.main.async {
+          interceptor.dispatchQueue.async {
             expect(self.mockDelegate.events.count).to(equal(5))
 
             // Network.requestWillBeSent
@@ -106,7 +109,7 @@ final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
     it("http 302 redirection") {
       waitUntil(timeout: .seconds(2)) { done in
         self.session.dataTask(with: URL(string: "https://github.com/expo.png")!) { (data, response, error) in
-          DispatchQueue.main.async {
+          interceptor.dispatchQueue.async {
             expect(self.mockDelegate.events.count).to(equal(7))
 
             // Network.requestWillBeSent
@@ -168,7 +171,7 @@ final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
     it("respect image mimeType to CDP event") {
       waitUntil(timeout: .seconds(2)) { done in
         self.session.dataTask(with: URL(string: "https://avatars.githubusercontent.com/u/12504344")!) { (data, response, error) in
-          DispatchQueue.main.async {
+          interceptor.dispatchQueue.async {
             expect(self.mockDelegate.events.count).to(equal(5))
 
             // Network.requestWillBeSent
@@ -193,20 +196,20 @@ final class ExpoRequestCdpInterceptorSpec: ExpoSpec {
     it("skip `receivedResponseBody` when response size exceeding 1MB limit") {
       waitUntil(timeout: .seconds(5)) { done in
         self.session.dataTask(with: URL(string: "https://raw.githubusercontent.com/expo/expo/main/apps/native-component-list/assets/videos/ace.mp4")!) { (data, response, error) in
-          DispatchQueue.main.async {
+          interceptor.dispatchQueue.async {
             expect(self.mockDelegate.events.count).to(equal(4))
 
             var json = self.parseJSON(data: self.mockDelegate.events[0])
-            expect(json["method"] as! String).to(equal("Network.requestWillBeSent"))
+            expect(json["method"] as? String).to(equal("Network.requestWillBeSent"))
 
             json = self.parseJSON(data: self.mockDelegate.events[1])
-            expect(json["method"] as! String).to(equal("Network.requestWillBeSentExtraInfo"))
+            expect(json["method"] as? String).to(equal("Network.requestWillBeSentExtraInfo"))
 
             json = self.parseJSON(data: self.mockDelegate.events[2])
-            expect(json["method"] as! String).to(equal("Network.responseReceived"))
+            expect(json["method"] as? String).to(equal("Network.responseReceived"))
 
             json = self.parseJSON(data: self.mockDelegate.events[3])
-            expect(json["method"] as! String).to(equal("Network.loadingFinished"))
+            expect(json["method"] as? String).to(equal("Network.loadingFinished"))
 
             done()
           }
